@@ -128,3 +128,5 @@ projects/Test/Unit*/TestResult.xml
 # .NET version configuration
 # https://learn.microsoft.com/en-us/dotnet/core/versions/selection
 global.json
+
+.idea/

@@ -10,6 +10,7 @@
     <Copyright>Copyright © 2007-2023 VMware, Inc. or its affiliates.</Copyright>
     <Description>The RabbitMQ OAuth2 Client Library for .NET enables OAuth2 token refresh for RabbitMQ.Client</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>GerardSmit.RabbitMQ.Client.OAuth2</PackageId>
     <PackageIcon>icon.png</PackageIcon>
     <PackageLicenseExpression>Apache-2.0 OR MPL-2.0</PackageLicenseExpression>
     <PackageProjectUrl>https://www.rabbitmq.com/dotnet.html</PackageProjectUrl>
