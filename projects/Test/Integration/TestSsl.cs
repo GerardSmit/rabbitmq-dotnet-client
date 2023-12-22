@@ -59,12 +59,12 @@ namespace Test.Integration
         {
             Skip.IfNot(_sslEnv.IsSslConfigured, "SSL_CERTS_DIR and/or PASSWORD are not configured, skipping test");
 
-            var cf = CreateConnectionFactory();
+            ConnectionFactory cf = CreateConnectionFactory();
             cf.Port = 5671;
-
             cf.Ssl.ServerName = "*";
             cf.Ssl.AcceptablePolicyErrors = SslPolicyErrors.RemoteCertificateNameMismatch;
             cf.Ssl.Enabled = true;
+
             SendReceive(cf);
         }
 
@@ -73,10 +73,11 @@ namespace Test.Integration
         {
             Skip.IfNot(_sslEnv.IsSslConfigured, "SSL_CERTS_DIR and/or PASSWORD are not configured, skipping test");
 
-            var cf = CreateConnectionFactory();
+            ConnectionFactory cf = CreateConnectionFactory();
             cf.Port = 5671;
             cf.Ssl.ServerName = _sslEnv.Hostname;
             cf.Ssl.Enabled = true;
+
             SendReceive(cf);
         }
 
@@ -88,12 +89,13 @@ namespace Test.Integration
             string certPath = _sslEnv.CertPath;
             Assert.True(File.Exists(certPath));
 
-            var cf = CreateConnectionFactory();
+            ConnectionFactory cf = CreateConnectionFactory();
             cf.Port = 5671;
             cf.Ssl.ServerName = _sslEnv.Hostname;
             cf.Ssl.CertPath = certPath;
             cf.Ssl.CertPassphrase = _sslEnv.CertPassphrase;
             cf.Ssl.Enabled = true;
+
             SendReceive(cf);
         }
 
@@ -103,7 +105,7 @@ namespace Test.Integration
         {
             Skip.IfNot(_sslEnv.IsSslConfigured, "SSL_CERTS_DIR and/or PASSWORD are not configured, skipping test");
 
-            var cf = CreateConnectionFactory();
+            ConnectionFactory cf = CreateConnectionFactory();
             cf.Port = 5671;
             cf.Ssl = new SslOption()
             {
@@ -119,9 +121,9 @@ namespace Test.Integration
             SendReceive(cf);
         }
 
-        private void SendReceive(ConnectionFactory cf)
+        private void SendReceive(ConnectionFactory connectionFactory)
         {
-            using (IConnection conn = cf.CreateConnection(_testDisplayName))
+            using (IConnection conn = CreateConnectionWithRetries(connectionFactory))
             {
                 using (IChannel ch = conn.CreateChannel())
                 {

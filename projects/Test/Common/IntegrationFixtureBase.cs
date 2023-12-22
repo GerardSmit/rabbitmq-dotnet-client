@@ -32,10 +32,15 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 using RabbitMQ.Client.Framing.Impl;
 using Xunit;
 using Xunit.Abstractions;
@@ -44,6 +49,8 @@ namespace Test
 {
     public abstract class IntegrationFixtureBase : IDisposable
     {
+        private readonly SemaphoreSlim _byteTrackingLock = new SemaphoreSlim(1, 1);
+
         private static bool s_isRunningInCI = false;
         private static bool s_isWindows = false;
         private static bool s_isVerbose = false;
@@ -109,12 +116,18 @@ namespace Test
         {
             if (_connFactory == null)
             {
+                /*
+                 * https://github.com/rabbitmq/rabbitmq-dotnet-client/commit/120f9bfce627f704956e1008d095b853b459d45b#r135400345
+                 * 
+                 * Integration tests must use CreateConnectionFactory so that ClientProvidedName is set for the connection.
+                 * Tests that close connections via `rabbitmqctl` depend on finding the connection PID via its name.
+                 */
                 _connFactory = CreateConnectionFactory();
             }
 
             if (_conn == null)
             {
-                _conn = _connFactory.CreateConnection();
+                _conn = CreateConnectionWithRetries(_connFactory);
                 _channel = _conn.CreateChannel();
                 AddCallbackHandlers();
             }
@@ -196,22 +209,91 @@ namespace Test
             get { return s_isVerbose; }
         }
 
-        internal AutorecoveringConnection CreateAutorecoveringConnection(IList<string> hostnames)
+        internal AutorecoveringConnection CreateAutorecoveringConnection(IEnumerable<string> hostnames, bool expectException = false)
         {
 
-            return CreateAutorecoveringConnection(hostnames, RequestedConnectionTimeout, RecoveryInterval);
+            return CreateAutorecoveringConnection(hostnames, RequestedConnectionTimeout, RecoveryInterval, expectException);
         }
 
         internal AutorecoveringConnection CreateAutorecoveringConnection(IEnumerable<string> hostnames,
-            TimeSpan requestedConnectionTimeout, TimeSpan networkRecoveryInterval)
+            TimeSpan requestedConnectionTimeout, TimeSpan networkRecoveryInterval, bool expectException = false)
         {
+            if (hostnames is null)
+            {
+                throw new ArgumentNullException(nameof(hostnames));
+            }
+
             ConnectionFactory cf = CreateConnectionFactory();
+
             cf.AutomaticRecoveryEnabled = true;
             // tests that use this helper will likely list unreachable hosts;
             // make sure we time out quickly on those
             cf.RequestedConnectionTimeout = requestedConnectionTimeout;
             cf.NetworkRecoveryInterval = networkRecoveryInterval;
-            return (AutorecoveringConnection)cf.CreateConnection(hostnames);
+
+            return (AutorecoveringConnection)CreateConnectionWithRetries(cf, hostnames, expectException);
+        }
+
+        protected IConnection CreateConnectionWithRetries(ConnectionFactory connectionFactory,
+            IEnumerable<string> hostnames = null, bool expectException = false)
+        {
+            bool shouldRetry = IsWindows;
+            ushort tries = 0;
+
+            do
+            {
+                try
+                {
+                    if (hostnames is null)
+                    {
+                        return connectionFactory.CreateConnection();
+                    }
+                    else
+                    {
+                        return connectionFactory.CreateConnection(hostnames);
+                    }
+                }
+                catch (BrokerUnreachableException ex)
+                {
+                    if (expectException)
+                    {
+                        throw;
+                    }
+                    else
+                    {
+                        IOException ioex = null;
+
+                        if (ex.InnerException is AggregateException agex0)
+                        {
+                            AggregateException agex1 = agex0.Flatten();
+                            ioex = agex1.InnerExceptions.Where(ex => ex is IOException).FirstOrDefault() as IOException;
+                        }
+
+                        ioex ??= ex.InnerException as IOException;
+
+                        if (ioex is null)
+                        {
+                            throw;
+                        }
+                        else
+                        {
+                            if (ioex.InnerException is SocketException)
+                            {
+                                tries++;
+                                _output.WriteLine($"WARNING: {nameof(CreateConnectionWithRetries)} retrying ({tries}), caught exception: {ioex.InnerException}");
+                            }
+                            else
+                            {
+                                throw;
+                            }
+                        }
+                    }
+                }
+            }
+            while (shouldRetry && tries < 5);
+
+            Assert.Fail($"FAIL: {nameof(CreateConnectionWithRetries)} could not open connection");
+            return null;
         }
 
         protected void WithTemporaryChannel(Action<IChannel> action)
@@ -292,7 +374,7 @@ namespace Test
                 $"waiting {timeSpan.TotalSeconds} seconds on a latch for '{desc}' timed out");
         }
 
-        protected ConnectionFactory CreateConnectionFactory()
+        protected virtual ConnectionFactory CreateConnectionFactory()
         {
             string now = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
             return new ConnectionFactory
@@ -337,6 +419,39 @@ namespace Test
                 _output.WriteLine($"{_testDisplayName} channel {ch.ChannelNumber} shut down: {args}");
             }
             a(args);
+        }
+
+        protected async Task<TrackRentedByteResult> TrackRentedBytesAsync()
+        {
+            Connection connection;
+
+            if (_conn is AutorecoveringConnection autorecoveringConnection)
+            {
+                connection = autorecoveringConnection.InnerConnection as Connection;
+            }
+            else
+            {
+                connection = _conn as Connection;
+            }
+
+            if (connection is null)
+            {
+                throw new InvalidOperationException("Cannot track rented bytes without a connection");
+            }
+
+            await _byteTrackingLock.WaitAsync();
+
+            try
+            {
+                connection.RentedBytes = 0;
+                connection.TrackRentedBytes = true;
+                return new TrackRentedByteResult(connection, _byteTrackingLock);
+            }
+            catch
+            {
+                _byteTrackingLock.Release();
+                throw;
+            }
         }
 
         private static void InitIsRunningInCI()
